@@ -396,13 +396,11 @@ static int32_t afe_callback(struct apr_client_data *data, void *priv)
 		/* Free ion memory due to RESET_EVENTS*/
 		tfa_cal->map_data.map_handle = 0;
 		rc = msm_audio_ion_free(
-			tfa_cal->map_data.ion_client,
-			tfa_cal->map_data.ion_handle);
+			tfa_cal->map_data.dma_buf);
 		if (rc < 0)
 			pr_err("%s: msm_audio_ion_free failed:\n", __func__);
 
-		tfa_cal->map_data.ion_client = NULL;
-		tfa_cal->map_data.ion_handle = NULL;
+		tfa_cal->map_data.dma_buf = NULL;
 #endif /* CONFIG_SND_SOC_TFA9872 || CONFIG_SND_SOC_TFA9878 */
 
 		/* send info to user */
@@ -1720,7 +1718,7 @@ static int remap_cal_data(struct cal_block_data *cal_block, int cal_index)
 {
 	int ret = 0;
 
-	if (cal_block->map_data.ion_client == NULL) {
+	if (cal_block->map_data.dma_buf == NULL) {
 		pr_err("%s: No ION allocation for cal index %d!\n",
 			__func__, cal_index);
 		ret = -EINVAL;
@@ -2068,15 +2066,6 @@ static int afe_tfadsp_read(int dev, int buf_size, char *buf)
 			return -ENODEV;
 		}
 		rtac_set_afe_handle(this_afe.apr);
-	}
-
-	if(this_afe.tfa_cal.map_data.ion_client == NULL){
-		result = afe_nxp_mmap_create();
-		if (result) {
-			pr_err("%s: could not create mmap for TFADSP! %d\n", __func__, result);
-			result = -EINVAL;
-			goto fail_cmd;
-		}
 	}
 
 	if ( buf_size <= 0
@@ -5246,8 +5235,8 @@ int q6afe_audio_client_buf_alloc_contiguous(unsigned int dir,
 
 	ac->port[dir].buf = buf;
 
-	rc = msm_audio_ion_alloc("afe_client", &buf[0].client,
-				&buf[0].handle, bufsz*bufcnt,
+	rc = msm_audio_ion_alloc(&buf[0].dma_buf,
+				bufsz * bufcnt,
 				&buf[0].phys, &len,
 				&buf[0].data);
 	if (rc) {
@@ -5500,16 +5489,13 @@ int q6afe_audio_client_buf_free_contiguous(unsigned int dir,
 	cnt = port->max_buf_cnt - 1;
 
 	if (port->buf[0].data) {
-		pr_debug("%s: data[%pK]phys[%pK][%pK] , client[%pK] handle[%pK]\n",
+		pr_debug("%s: data[%pK], phys[%pK], dma_buf[%pK]\n",
 			__func__,
 			port->buf[0].data,
 			&port->buf[0].phys,
-			&port->buf[0].phys,
-			port->buf[0].client,
-			port->buf[0].handle);
-		msm_audio_ion_free(port->buf[0].client, port->buf[0].handle);
-		port->buf[0].client = NULL;
-		port->buf[0].handle = NULL;
+			port->buf[0].dma_buf);
+		msm_audio_ion_free(port->buf[0].dma_buf);
+		port->buf[0].dma_buf = NULL;
 	}
 
 	while (cnt >= 0) {
@@ -8168,12 +8154,10 @@ static int afe_nxp_mmap_create(void)
 
   tfa_cal->map_data.map_size = SZ_4K;
 
-	rc = msm_audio_ion_alloc("tfa_cal",
-			&tfa_cal->map_data.ion_client,
-			&tfa_cal->map_data.ion_handle,
+	rc = msm_audio_ion_alloc(&tfa_cal->map_data.dma_buf,
 			tfa_cal->map_data.map_size,
 			&tfa_cal->cal_data.paddr,
-	          &len,
+	          	&len,
 			&tfa_cal->cal_data.kvaddr);
   if(rc){
       pr_err("%s: ION_alloc failed, rc = %d\n", __func__, rc);
@@ -8187,7 +8171,7 @@ static int afe_nxp_mmap_create(void)
   rc = afe_map_rtac_block(tfa_cal);
   if(rc < 0){
       pr_err("%s : memory mapping failed = %d\n", __func__, rc);
-      msm_audio_ion_free(tfa_cal->map_data.ion_client, tfa_cal->map_data.ion_handle);
+      msm_audio_ion_free(tfa_cal->map_data.dma_buf);
       return rc;
   }
 
@@ -8215,8 +8199,7 @@ static void afe_nxp_mmap_destroy(void)
 		tfa_cal->map_data.map_handle = 0;
 	}
 
-	msm_audio_ion_free(tfa_cal->map_data.ion_client, tfa_cal->map_data.ion_handle);
-    tfa_cal->map_data.ion_client = NULL;
+	msm_audio_ion_free(tfa_cal->map_data.dma_buf);
 
 	pr_info("%s: end\n", __func__);
 }

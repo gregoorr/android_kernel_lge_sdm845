@@ -157,8 +157,7 @@ struct mem_buffer {
 };
 
 struct share_mem_buf {
-	struct ion_handle	*handle;
-	struct ion_client	*client;
+	struct dma_buf		*dma_buf;
 	struct mem_buffer	buf[NUM_OF_BUFFERS];
 };
 
@@ -166,8 +165,7 @@ struct mem_map_table {
 	dma_addr_t		phys;
 	void			*data;
 	size_t			size; /* size of buffer */
-	struct ion_handle	*handle;
-	struct ion_client	*client;
+	struct dma_buf		*dma_buf;
 };
 
 /* Common */
@@ -1919,12 +1917,6 @@ struct voice_data {
 	struct work_struct voice_mic_break_work;
 };
 
-struct cal_mem {
-	struct ion_handle *handle;
-	uint32_t phy;
-	void *buf;
-};
-
 #define MAX_VOC_SESSIONS 8
 
 struct common_data {
@@ -1953,9 +1945,6 @@ struct common_data {
 	uint32_t rtac_mem_handle;
 
 	uint32_t voice_host_pcm_mem_handle;
-
-	struct cal_mem cvp_cal;
-	struct cal_mem cvs_cal;
 
 	struct mutex common_lock;
 

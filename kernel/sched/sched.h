@@ -3184,3 +3184,10 @@ static inline void sched_irq_work_queue(struct irq_work *work)
 		irq_work_queue_on(work, cpumask_any(cpu_online_mask));
 }
 #endif
+
+struct sched_avg_stats {
+	int nr;
+	int nr_misfit;
+	int nr_max;
+};
+extern void sched_get_nr_running_avg(struct sched_avg_stats *stats);

@@ -1782,17 +1782,15 @@ TRACE_EVENT(sched_overutilized,
 
 TRACE_EVENT(sched_get_nr_running_avg,
 
-	TP_PROTO(int avg, int big_avg, int iowait_avg,
-		 unsigned int max_nr, unsigned int big_max_nr),
+	TP_PROTO(int cpu, int nr, int nr_misfit, int nr_max),
 
-	TP_ARGS(avg, big_avg, iowait_avg, max_nr, big_max_nr),
+	TP_ARGS(cpu, nr, nr_misfit, nr_max),
 
 	TP_STRUCT__entry(
-		__field( int,	avg			)
-		__field( int,	big_avg			)
-		__field( int,	iowait_avg		)
-		__field( unsigned int,	max_nr		)
-		__field( unsigned int,	big_max_nr	)
+		__field( int, cpu)
+		__field( int, nr)
+		__field( int, nr_misfit)
+		__field( int, nr_max)
 		__array(	char,	comm,   TASK_COMM_LEN	)
 		__field(	pid_t,	pid			)
 		__field(	pid_t,	cur_pid			)
@@ -1817,18 +1815,16 @@ TRACE_EVENT(sched_get_nr_running_avg,
 	),
 
 	TP_fast_assign(
-		__entry->avg		= avg;
-		__entry->big_avg	= big_avg;
-		__entry->iowait_avg	= iowait_avg;
-		__entry->max_nr		= max_nr;
-		__entry->big_max_nr	= big_max_nr;
+		__entry->cpu = cpu;
+		__entry->nr = nr;
+		__entry->nr_misfit = nr_misfit;
+		__entry->nr_max = nr_max;
 	),
 
 	TP_printk("avg=%d big_avg=%d iowait_avg=%d max_nr=%u big_max_nr=%u"
 		" wc %llu ws %llu delta %llu event %d cpu %d cur_pid %d task %d (%s) ms %llu delta %llu demand %u sum %u irqtime %llu"
 		" cs %llu ps %llu util %llu cur_window %u prev_window %u active_wins %u",
-		__entry->avg, __entry->big_avg, __entry->iowait_avg,
-		__entry->max_nr, __entry->big_max_nr,
+		__entry->cpu, __entry->nr, __entry->nr_misfit, __entry->nr_max,
 		__entry->wallclock, __entry->win_start, __entry->delta,
 		__entry->evt, __entry->cpu, __entry->cur_pid,
 		__entry->pid, __entry->comm, __entry->mark_start,

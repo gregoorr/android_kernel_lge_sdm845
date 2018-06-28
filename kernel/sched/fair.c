@@ -3079,6 +3079,31 @@ static inline void update_tg_load_avg(struct cfs_rq *cfs_rq, int force)
 }
 
 /*
+ * rt_rq:
+ *
+ *   util_sum = \Sum se->avg.util_sum but se->avg.util_sum is not tracked
+ *   util_sum = cpu_scale * load_sum
+ *   runnable_load_sum = load_sum
+ *
+ *   load_avg and runnable_load_avg are not supported and meaningless.
+ *
+ */
+
+int update_rt_rq_load_avg(u64 now, struct rq *rq, int running)
+{
+	if (___update_load_sum(now, rq->cpu, &rq->avg_rt,
+				running,
+				running,
+				running)) {
+
+		___update_load_avg(&rq->avg_rt, 1, 1);
+		return 1;
+	}
+
+	return 0;
+}
+
+/*
  * Called within set_task_rq() right before setting a task's cpu. The
  * caller only guarantees p->pi_lock is held; no other assumptions,
  * including the state of rq->lock, should be made.
@@ -8814,6 +8839,14 @@ static void attach_tasks(struct lb_env *env)
 	raw_spin_unlock(&env->dst_rq->lock);
 }
 
+static inline bool rt_rq_has_blocked(struct rq *rq)
+{
+	if (READ_ONCE(rq->avg_rt.util_avg))
+		return true;
+
+	return false;
+}
+
 #ifdef CONFIG_FAIR_GROUP_SCHED
 static void update_blocked_averages(int cpu)
 {
@@ -8843,6 +8876,10 @@ static void update_blocked_averages(int cpu)
 		if (se && !skip_blocked_update(se))
 			update_load_avg(se, 0);
 	}
+	update_rt_rq_load_avg(rq_clock_task(rq), rq, 0);
+	/* Don't need periodic decay once load/util_avg are null */
+	if (rt_rq_has_blocked(rq))
+		done = false;
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
 }
 
@@ -8902,6 +8939,7 @@ static inline void update_blocked_averages(int cpu)
 	raw_spin_lock_irqsave(&rq->lock, flags);
 	update_rq_clock(rq);
 	update_cfs_rq_load_avg(cfs_rq_clock_task(cfs_rq), cfs_rq, true);
+	update_rt_rq_load_avg(rq_clock_task(rq), rq, 0);
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
 }
 

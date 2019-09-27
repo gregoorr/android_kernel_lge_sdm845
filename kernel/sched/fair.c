@@ -3009,7 +3009,7 @@ static inline void cfs_rq_util_change(struct cfs_rq *cfs_rq)
 	}
 }
 
-#ifdef CONFIG_SMP
+#ifdef CONFIG_SCHED_WALT
 u32 sched_get_wake_up_idle(struct task_struct *p)
 {
 	u32 enabled = p->flags & PF_WAKE_UP_IDLE;
@@ -3030,7 +3030,9 @@ int sched_set_wake_up_idle(struct task_struct *p, int wake_up_idle)
 	return 0;
 }
 EXPORT_SYMBOL(sched_set_wake_up_idle);
+#endif
 
+#ifdef CONFIG_SMP
 /*
  * Approximate:
  *   val * y^n,    where y^32 ~= 0.5 (~1 scheduling period)

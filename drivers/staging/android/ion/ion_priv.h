@@ -19,6 +19,7 @@
 #define _ION_PRIV_H
 
 #include <linux/device.h>
+#include <linux/msm_dma_iommu_mapping.h>
 #include <linux/dma-direction.h>
 #include <linux/kref.h>
 #include <linux/mm_types.h>
@@ -94,6 +95,7 @@ struct ion_buffer {
 	};
 	struct ion_device *dev;
 	struct ion_heap *heap;
+	struct msm_iommu_data iommu_data;
 	unsigned long flags;
 	unsigned long private_flags;
 	size_t size;

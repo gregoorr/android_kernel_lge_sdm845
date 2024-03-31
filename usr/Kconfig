@@ -23,7 +23,7 @@ config INITRAMFS_SOURCE
 
 config INITRAMFS_IGNORE_SKIP_FLAG
 	bool "Force initramfs even when skip_initramfs is set"
-	default n
+	default y
 	help
 	  Ignore skip_initramfs cmdline flag.
 	  This should only be used if you have no control over cmdline

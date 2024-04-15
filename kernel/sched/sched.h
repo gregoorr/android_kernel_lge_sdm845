@@ -3188,3 +3188,8 @@ static inline unsigned long cpu_util_rt(struct rq *rq)
 {
 	return rq->avg_rt.util_avg;
 }
+
+static inline int mark_reserved(int cpu)
+{
+	return 0;
+}

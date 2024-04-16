@@ -8852,6 +8852,7 @@ static void update_blocked_averages(int cpu)
 {
 	struct rq *rq = cpu_rq(cpu);
 	struct cfs_rq *cfs_rq;
+	const struct sched_class *curr_class;
 	unsigned long flags;
 
 	raw_spin_lock_irqsave(&rq->lock, flags);
@@ -8876,7 +8877,8 @@ static void update_blocked_averages(int cpu)
 		if (se && !skip_blocked_update(se))
 			update_load_avg(se, 0);
 	}
-	update_rt_rq_load_avg(rq_clock_task(rq), rq, 0);
+	curr_class = rq->curr->sched_class;
+	update_rt_rq_load_avg(rq_clock_task(rq), rq, curr_class == &rt_sched_class);
 	/* Don't need periodic decay once load/util_avg are null */
 	if (rt_rq_has_blocked(rq))
 		done = false;
@@ -8934,12 +8936,14 @@ static inline void update_blocked_averages(int cpu)
 {
 	struct rq *rq = cpu_rq(cpu);
 	struct cfs_rq *cfs_rq = &rq->cfs;
+	const struct sched_class *curr_class;
 	unsigned long flags;
 
 	raw_spin_lock_irqsave(&rq->lock, flags);
 	update_rq_clock(rq);
 	update_cfs_rq_load_avg(cfs_rq_clock_task(cfs_rq), cfs_rq, true);
-	update_rt_rq_load_avg(rq_clock_task(rq), rq, 0);
+	curr_class = rq->curr->sched_class;
+	update_rt_rq_load_avg(rq_clock_task(rq), rq, curr_class == &rt_sched_class);
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
 }
 

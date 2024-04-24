@@ -14,7 +14,6 @@
 #include <linux/cpufreq.h>
 #include <linux/kthread.h>
 #include <linux/slab.h>
-#include <trace/events/power.h>
 #include <linux/sched/sysctl.h>
 #include "sched.h"
 #include "tune.h"
@@ -891,8 +890,6 @@ static void sugov_limits(struct cpufreq_policy *policy)
 		ret = cpufreq_policy_apply_limits_fast(policy);
 		if (ret && policy->cur != ret) {
 			policy->cur = ret;
-			for_each_cpu(cpu, policy->cpus)
-				trace_cpu_frequency(ret, cpu);
 		}
 	}
 

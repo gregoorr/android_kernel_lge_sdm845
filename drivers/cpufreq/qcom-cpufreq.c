@@ -77,12 +77,11 @@ static int msm_cpufreq_target(struct cpufreq_policy *policy,
 				unsigned int relation)
 {
 	int ret = 0;
-	int index;
-	struct cpufreq_frequency_table *table;
 	int first_cpu = cpumask_first(policy->related_cpus);
 
 	mutex_lock(&per_cpu(suspend_data, policy->cpu).suspend_mutex);
 
+	target_freq = per_cpu(cached_resolve_freq, first_cpu);
 	if (target_freq == policy->cur)
 		goto done;
 
@@ -93,19 +92,8 @@ static int msm_cpufreq_target(struct cpufreq_policy *policy,
 		goto done;
 	}
 
-	table = policy->freq_table;
-	if (per_cpu(cached_resolve_freq, first_cpu) == target_freq)
-		index = per_cpu(cached_resolve_idx, first_cpu);
-	else
-		index = cpufreq_frequency_table_target(policy, target_freq,
-						       relation);
+	ret = set_cpu_freq(policy, target_freq);
 
-	pr_debug("CPU[%d] target %d relation %d (%d-%d) selected %d\n",
-		policy->cpu, target_freq, relation,
-		policy->min, policy->max, table[index].frequency);
-
-	ret = set_cpu_freq(policy, table[index].frequency,
-			   table[index].driver_data);
 done:
 	mutex_unlock(&per_cpu(suspend_data, policy->cpu).suspend_mutex);
 	return ret;
@@ -173,13 +161,15 @@ static int msm_cpufreq_init(struct cpufreq_policy *policy)
 	 * Call set_cpu_freq unconditionally so that when cpu is set to
 	 * online, frequency limit will always be updated.
 	 */
-	ret = set_cpu_freq(policy, table[index].frequency,
-			   table[index].driver_data);
+	ret = set_cpu_freq(policy, table[index].frequency);
 	if (ret)
 		return ret;
 	pr_debug("cpufreq: cpu%d init at %d switching to %d\n",
 			policy->cpu, cur_freq, table[index].frequency);
 	policy->cur = table[index].frequency;
+
+	per_cpu(cached_resolve_idx, cpumask_first(policy->related_cpus)) = index;
+	per_cpu(cached_resolve_freq, cpumask_first(policy->related_cpus)) = table[index].frequency;
 
 	return 0;
 }
@@ -532,7 +522,6 @@ static int __init msm_cpufreq_register(void)
 	for_each_possible_cpu(cpu) {
 		mutex_init(&(per_cpu(suspend_data, cpu).suspend_mutex));
 		per_cpu(suspend_data, cpu).device_suspended = 0;
-		per_cpu(cached_resolve_freq, cpu) = UINT_MAX;
 	}
 
 	rc = platform_driver_register(&msm_cpufreq_plat_driver);

@@ -150,15 +150,6 @@ static void sugov_update_commit(struct sugov_policy *sg_policy, u64 time,
 	if (sg_policy->next_freq == next_freq)
 		return;
 
-	if (sugov_up_down_rate_limit(sg_policy, time, next_freq)) {
-		/* Don't cache a raw freq that didn't become next_freq */
-		sg_policy->cached_raw_freq = 0;
-		return;
-	}
-
-	if (sg_policy->next_freq == next_freq)
-		return;
-
 	sg_policy->next_freq = next_freq;
 	sg_policy->last_freq_update_time = time;
 
@@ -169,6 +160,8 @@ static void sugov_update_commit(struct sugov_policy *sg_policy, u64 time,
 
 		policy->cur = next_freq;
 	} else {
+		if (sg_policy->work_in_progress)
+			return;
 		sg_policy->work_in_progress = true;
 		sched_irq_work_queue(&sg_policy->irq_work);
 	}
@@ -197,7 +190,7 @@ static void sugov_update_commit(struct sugov_policy *sg_policy, u64 time,
  * cpufreq driver limitations.
  */
 static unsigned int get_next_freq(struct sugov_policy *sg_policy,
-				  unsigned long util, unsigned long max)
+				  unsigned long util, unsigned long max, u64 time)
 {
 	struct cpufreq_policy *policy = sg_policy->policy;
 	unsigned int freq = arch_scale_freq_invariant() ?
@@ -205,10 +198,13 @@ static unsigned int get_next_freq(struct sugov_policy *sg_policy,
 
 	unsigned int idx, l_freq, h_freq;
 	unsigned int *best_freq = &l_freq;
+	unsigned int old_raw_freq;
 	freq = (freq + (freq >> 2)) * util / max;
 
 	if (freq == sg_policy->cached_raw_freq && !sg_policy->need_freq_update)
 		return sg_policy->next_freq;
+
+	old_raw_freq = sg_policy->cached_raw_freq; //save
 
 	sg_policy->need_freq_update = false;
 	sg_policy->cached_raw_freq = freq;
@@ -229,6 +225,11 @@ static unsigned int get_next_freq(struct sugov_policy *sg_policy,
 		best_freq = &h_freq;
 
 exit:
+	if (sugov_up_down_rate_limit(sg_policy, time, best_freq)) {
+		sg_policy->cached_raw_freq = old_raw_freq; //restore
+		return sg_policy->next_freq;
+	}
+
 	return cpufreq_driver_resolve_freq(policy, *best_freq);
 }
 
@@ -347,7 +348,7 @@ static void sugov_update_single(struct update_util_data *hook, u64 time,
 	busy = sugov_cpu_is_busy(sg_cpu);
 	sugov_get_util(&util, &max, sg_cpu->cpu);
 	sugov_iowait_boost(sg_cpu, &util, &max);
-	next_f = get_next_freq(sg_policy, util, max);
+	next_f = get_next_freq(sg_policy, util, max, time);
 	/*
 	 * Do not reduce the frequency if the CPU has not been idle
 	 * recently, as the reduction is likely to be premature then.
@@ -397,7 +398,7 @@ static unsigned int sugov_next_freq_shared(struct sugov_cpu *sg_cpu, u64 time)
 		sugov_iowait_boost(j_sg_cpu, &util, &max);
 	}
 
-	return get_next_freq(sg_policy, util, max);
+	return get_next_freq(sg_policy, util, max, time);
 }
 
 static void sugov_update_shared(struct update_util_data *hook, u64 time,

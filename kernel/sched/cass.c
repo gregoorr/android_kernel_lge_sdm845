@@ -42,14 +42,23 @@ void cass_cpu_util(struct cass_cpu_cand *c, int this_cpu, bool sync)
 
 	/* Get this CPU's utilization from CFS tasks */
 	c->util = READ_ONCE(cfs_rq->avg.util_avg);
+	if (sched_feat(UTIL_EST)) {
+		est = READ_ONCE(cfs_rq->avg.util_est.enqueued);
+		if (est > c->util) {
+			/* Don't deduct @current's util from estimated util */
+			sync = false;
+			c->util = est;
+		}
+	}
 
 	/*
-	 * Account for lost capacity due to time spent in RT tasks and IRQs.
+	 * Account for lost capacity due to time spent in RT/DL tasks and IRQs.
 	 * Capacity is considered lost to RT tasks even when @p is an RT task in
 	 * order to produce consistently balanced task placement results between
 	 * CFS and RT tasks when CASS selects a CPU for them.
 	 */
-	c->cap = c->cap_max - min(cpu_util_rt(rq), c->cap_max - 1);
+	c->cap = c->cap_max - min(cpu_util_rt(rq) + cpu_util_dl(rq) +
+				  cpu_util_irq(rq), c->cap_max - 1);
 
 	/*
 	 * Deduct @current's util from this CPU if this is a sync wake, unless
@@ -117,7 +126,7 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 	 * Get the utilization and uclamp minimum threshold for this task. Note
 	 * that RT tasks don't have per-entity load tracking.
 	 */
-	p_util = rt ? 0 : task_util(p);
+	p_util = rt ? 0 : task_util_est(p);
 	uc_min = uclamp_eff_value(p, UCLAMP_MIN);
 
 	/*
@@ -131,14 +140,15 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 	 * otherwise, if only one CPU is allowed and it is skipped before
 	 * @curr->cpu is set, then @best->cpu will be garbage.
 	 */
-	for_each_cpu_and(cpu, &p->cpus_allowed, cpu_active_mask) {
+	for_each_cpu_and(cpu, p->cpus_ptr, cpu_active_mask) {
 		/* Use the free candidate slot for @curr */
 		struct cass_cpu_cand *curr = &cands[cidx];
 		struct cpuidle_state *idle_state;
 		struct rq *rq = cpu_rq(cpu);
 
 		/* Get the capacity of this CPU adjusted for thermal pressure */
-		curr->cap_max = arch_scale_cpu_capacity(NULL, cpu);
+		curr->cap_max = arch_scale_cpu_capacity(cpu) -
+				thermal_load_avg(rq);
 
 		/* Prefer the CPU that meets the uclamp minimum requirement */
 		if (curr->cap_max < uc_min && best->cap_max >= uc_min)
@@ -149,7 +159,8 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 		 * sync wakes, treat the current CPU as idle if @current is the
 		 * only running task.
 		 */
-		if ((sync && cpu == this_cpu && rq->nr_running == 1) || idle_cpu(cpu)) {
+		if ((sync && cpu == this_cpu && rq->nr_running == 1) ||
+		    available_idle_cpu(cpu) || sched_idle_cpu(cpu)) {
 			/*
 			 * A non-idle candidate may be better when @p is uclamp
 			 * boosted. Otherwise, always prefer idle candidates.
@@ -225,8 +236,8 @@ static int cass_select_task_rq(struct task_struct *p, int prev_cpu,
 	 * first valid CPU since it's possible for certain types of tasks to run
 	 * on inactive CPUs.
 	 */
-	if (unlikely(!cpumask_intersects(&p->cpus_allowed, cpu_active_mask)))
-		return cpumask_first(&p->cpus_allowed);
+	if (unlikely(!cpumask_intersects(p->cpus_ptr, cpu_active_mask)))
+		return cpumask_first(p->cpus_ptr);
 
 	/* cass_best_cpu() needs the CFS task's utilization, so sync it up */
 	if (!rt && !(wake_flags & SD_BALANCE_FORK))
@@ -237,13 +248,12 @@ static int cass_select_task_rq(struct task_struct *p, int prev_cpu,
 }
 
 static int cass_select_task_rq_fair(struct task_struct *p, int prev_cpu,
-				    int sd_flag, int wake_flags)
+				    int wake_flags)
 {
 	return cass_select_task_rq(p, prev_cpu, wake_flags, false);
 }
 
-int cass_select_task_rq_rt(struct task_struct *p, int prev_cpu,
- 			   int sd_flag, int wake_flags)
+int cass_select_task_rq_rt(struct task_struct *p, int prev_cpu, int wake_flags)
 {
 	return cass_select_task_rq(p, prev_cpu, wake_flags, true);
 }

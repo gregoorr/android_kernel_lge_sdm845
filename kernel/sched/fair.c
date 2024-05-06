@@ -9578,7 +9578,7 @@ static inline void update_cpu_stats_if_tickless(struct rq *rq)
 		raw_spin_lock(&rq->lock);
 		update_rq_clock(rq);
 		cpu_load_update_idle(rq);
-		update_cfs_rq_load_avg(rq->clock_task, &rq->cfs, false);
+		update_cfs_rq_load_avg(rq->clock_task, &rq->cfs);
 		raw_spin_unlock(&rq->lock);
 	}
 }

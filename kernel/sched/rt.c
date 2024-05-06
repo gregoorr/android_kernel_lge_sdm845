@@ -11,6 +11,7 @@
 #include <linux/irq_work.h>
 #include <trace/events/sched.h>
 
+#include "fair.c"
 #include "walt.h"
 
 int sched_rr_timeslice = RR_TIMESLICE;
@@ -138,11 +139,6 @@ static inline struct rq *rq_of_rt_se(struct sched_rt_entity *rt_se)
 	struct rt_rq *rt_rq = rt_se->rt_rq;
 
 	return rt_rq->rq;
-}
-
-inline int update_rt_rq_load_avg(u64 now, struct rq *rq, int running)
-{
-	return 0;
 }
 
 void free_rt_sched_group(struct task_group *tg)

@@ -204,6 +204,7 @@ static unsigned int get_next_freq(struct sugov_policy *sg_policy,
 				policy->cpuinfo.max_freq : policy->cur;
 
 	unsigned int idx, l_freq, h_freq;
+	unsigned int *best_freq = &l_freq;
 	freq = (freq + (freq >> 2)) * util / max;
 
 	if (freq == sg_policy->cached_raw_freq && !sg_policy->need_freq_update)
@@ -211,21 +212,24 @@ static unsigned int get_next_freq(struct sugov_policy *sg_policy,
 
 	sg_policy->need_freq_update = false;
 	sg_policy->cached_raw_freq = freq;
-	l_freq = cpufreq_driver_resolve_freq(policy, freq);
+
+	idx = cpufreq_frequency_table_target(policy, freq, CPUFREQ_RELATION_L);
+	l_freq = policy->freq_table[idx].frequency;
 	idx = cpufreq_frequency_table_target(policy, freq, CPUFREQ_RELATION_H);
 	h_freq = policy->freq_table[idx].frequency;
-	h_freq = clamp(h_freq, policy->min, policy->max);
+
 	if (l_freq <= h_freq || l_freq == policy->min)
-		return l_freq;
+		goto exit;
 
 	/*
 	 * Use the frequency step below if the calculated frequency is <20%
 	 * higher than it.
 	 */
 	if (mult_frac(100, freq - h_freq, l_freq - h_freq) < 20)
-		return h_freq;
+		best_freq = &h_freq;
 
-	return l_freq;
+exit:
+	return cpufreq_driver_resolve_freq(policy, *best_freq);
 }
 
 static void sugov_get_util(unsigned long *util, unsigned long *max, int cpu)

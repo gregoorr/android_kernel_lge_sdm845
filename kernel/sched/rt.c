@@ -11,7 +11,6 @@
 #include <linux/irq_work.h>
 #include <trace/events/sched.h>
 
-#include "fair.c"
 #include "walt.h"
 
 int sched_rr_timeslice = RR_TIMESLICE;

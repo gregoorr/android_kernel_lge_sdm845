@@ -896,27 +896,6 @@ static ssize_t do_iter_write(struct file *file, struct iov_iter *iter,
 	return ret;
 }
 
-static ssize_t do_readv_writev(int type, struct file *file,
-			       const struct iovec __user *uvector,
-			       unsigned long nr_segs, loff_t *pos,
-			       int flags)
-{
-	struct iovec iovstack[UIO_FASTIOV];
-	struct iovec *iov = iovstack;
-	struct iov_iter iter;
-	ssize_t ret;
-
-	ret = import_iovec(type, uvector, nr_segs,
-			   ARRAY_SIZE(iovstack), &iov, &iter);
-	if (ret < 0)
-		return ret;
-
-	ret = __do_readv_writev(type, file, &iter, pos, flags);
-	kfree(iov);
-
-	return ret;
-}
-
 ssize_t vfs_readv(struct file *file, const struct iovec __user *vec,
 		  unsigned long vlen, loff_t *pos, int flags)
 {

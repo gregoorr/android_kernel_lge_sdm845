@@ -102,11 +102,8 @@ struct ion_dma_buf_attachment;
 struct ion_buffer {
 	struct ion_heap *heap;
 	struct sg_table *sg_table;
-	struct mutex kmap_lock;
-	struct work_struct free;
 	struct ion_dma_buf_attachment *attachments;
 	struct list_head map_freelist;
-	spinlock_t freelist_lock;
 	void *priv_virt;
 	void *vaddr;
 	unsigned int flags;
@@ -116,18 +113,6 @@ struct ion_buffer {
 };
 
 void ion_buffer_destroy(struct ion_buffer *buffer);
-
-/**
- * struct ion_device - the metadata of the ion device node
- * @dev:		the actual misc device
- * @buffers:		an rb tree of all the existing buffers
- * @buffer_lock:	lock protecting the tree of buffers
- * @lock:		rwsem protecting the tree of heaps and clients
- */
-struct ion_device {
-	struct plist_head heaps;
-	struct rw_semaphore heap_rwsem;
-};
 
 /* refer to include/linux/pm.h */
 struct ion_pm_ops {
@@ -165,13 +150,11 @@ struct ion_client *ion_client_create(struct ion_device *dev,
  * any handles it is holding.
  */
 struct ion_heap {
-	struct plist_node node;
 	enum ion_heap_type type;
 	struct ion_heap_ops *ops;
 	unsigned long flags;
 	unsigned int id;
 	const char *name;
-	struct shrinker shrinker;
 	void *priv;
 	struct workqueue_struct *wq;
 };

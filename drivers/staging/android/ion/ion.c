@@ -40,7 +40,6 @@
 #include <linux/idr.h>
 #include <linux/msm_ion.h>
 #include <linux/msm_dma_iommu_mapping.h>
-#include <trace/events/kmem.h>
 
 
 #include "ion.h"
@@ -257,8 +256,6 @@ static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
 	mutex_lock(&dev->buffer_lock);
 	ion_buffer_add(dev, buffer);
 	mutex_unlock(&dev->buffer_lock);
-	trace_ion_heap_grow(heap->name, len,
-				atomic_long_read(&heap->total_allocated));
 	atomic_long_add(len, &heap->total_allocated);
 	return buffer;
 
@@ -280,8 +277,6 @@ void ion_buffer_destroy(struct ion_buffer *buffer)
 	}
 	buffer->heap->ops->unmap_dma(buffer->heap, buffer);
 
-	trace_ion_heap_shrink(buffer->heap->name,  buffer->size,
-				atomic_long_read(&buffer->heap->total_allocated));
 	atomic_long_sub(buffer->size, &buffer->heap->total_allocated);
 	buffer->heap->ops->free(buffer);
 	vfree(buffer->pages);
@@ -585,17 +580,10 @@ static struct ion_handle *__ion_alloc(
 		/* if the caller didn't specify this heap id */
 		if (!((1 << heap->id) & heap_id_mask))
 			continue;
-		trace_ion_alloc_buffer_start(client->name, heap->name, len,
-					     heap_id_mask, flags);
 		buffer = ion_buffer_create(heap, dev, len, align, flags);
-		trace_ion_alloc_buffer_end(client->name, heap->name, len,
-					   heap_id_mask, flags);
 		if (!IS_ERR(buffer))
 			break;
 
-		trace_ion_alloc_buffer_fallback(client->name, heap->name, len,
-						heap_id_mask, flags,
-						PTR_ERR(buffer));
 		if (dbg_str_idx < MAX_DBG_STR_LEN) {
 			unsigned int len_left;
 			int ret_value;
@@ -619,15 +607,10 @@ static struct ion_handle *__ion_alloc(
 	up_read(&dev->lock);
 
 	if (!buffer) {
-		trace_ion_alloc_buffer_fail(client->name, dbg_str, len,
-					    heap_id_mask, flags, -ENODEV);
 		return ERR_PTR(-ENODEV);
 	}
 
 	if (IS_ERR(buffer)) {
-		trace_ion_alloc_buffer_fail(client->name, dbg_str, len,
-					    heap_id_mask, flags,
-					    PTR_ERR(buffer));
 		pr_debug("ION is unable to allocate 0x%zx bytes (alignment: 0x%zx) from heap(s) %sfor client %s\n",
 			 len, align, dbg_str, client->name);
 		return ERR_CAST(buffer);

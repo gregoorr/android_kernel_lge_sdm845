@@ -2,7 +2,7 @@
  * drivers/staging/android/ion/ion_page_pool.c
  *
  * Copyright (C) 2011 Google, Inc.
- * Copyright (c) 2016, 2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016, The Linux Foundation. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -41,7 +41,8 @@ static void *ion_page_pool_alloc_pages(struct ion_page_pool *pool)
 			goto error_free_pages;
 
 	ion_page_pool_alloc_set_cache_policy(pool, page);
-
+	mod_node_page_state(page_pgdat(page), NR_ION_HEAP,
+				1 << pool->order);
 	return page;
 error_free_pages:
 	__free_pages(page, pool->order);
@@ -53,6 +54,8 @@ static void ion_page_pool_free_pages(struct ion_page_pool *pool,
 {
 	ion_page_pool_free_set_cache_policy(pool, page);
 	__free_pages(page, pool->order);
+	mod_node_page_state(page_pgdat(page), NR_ION_HEAP,
+				-(1 << pool->order));
 }
 
 static int ion_page_pool_add(struct ion_page_pool *pool, struct page *page)

@@ -549,9 +549,6 @@ int ion_handle_put(struct ion_handle *handle);
 
 void show_ion_usage(struct ion_device *dev);
 
-int ion_share_dma_buf_fd_nolock(struct ion_client *client,
-				struct ion_handle *handle);
-
 bool ion_handle_validate(struct ion_client *client, struct ion_handle *handle);
 
 void lock_client(struct ion_client *client);
@@ -572,9 +569,13 @@ int ion_phys_nolock(struct ion_client *client, struct ion_handle *handle,
 		    ion_phys_addr_t *addr, size_t *len);
 
 /**
- * This function is same as ion_import_dma_buf() except it won't use
+ * This function is same as ion_import_dma_buf_fd() except it won't use
  * client->lock.
  */
-struct ion_handle *ion_import_dma_buf_fd_nolock(struct ion_client *client, int fd);
+struct ion_handle *ion_import_dma_buf_fd_nolock(struct ion_client *client,
+						int fd);
+
+int ion_share_dma_buf_fd_nolock(struct ion_client *client,
+				struct ion_handle *handle);
 
 #endif /* _ION_PRIV_H */

@@ -4602,7 +4602,6 @@ static void __exit fastrpc_device_exit(void)
 	class_destroy(me->class);
 	cdev_del(&me->cdev);
 	unregister_chrdev_region(me->dev_no, NUM_CHANNELS);
-	ion_client_destroy(me->client);
 	debugfs_remove_recursive(debugfs_root);
 }
 

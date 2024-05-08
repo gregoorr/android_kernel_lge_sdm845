@@ -141,6 +141,9 @@ static struct page *alloc_buffer_page(struct ion_system_heap *heap,
 	if (!page)
 		return 0;
 
+	if (page && cached)
+		ion_pages_sync_for_device(NULL, page, PAGE_SIZE << order,
+					  DMA_BIDIRECTIONAL);
 	return page;
 }
 
@@ -485,7 +488,7 @@ static int ion_system_heap_allocate(struct ion_heap *heap,
 
 err_free_sg2:
 	/* We failed to zero buffers. Bypass pool */
-	buffer->private_flags |= ION_PRIV_FLAG_SHRINKER_FREE;
+	buffer->flags |= ION_PRIV_FLAG_SHRINKER_FREE;
 
 	if (vmid > 0)
 		ion_system_secure_heap_unassign_sg(table, vmid);

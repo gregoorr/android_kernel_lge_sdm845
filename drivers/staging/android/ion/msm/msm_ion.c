@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2018, 2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -37,6 +37,25 @@
 #include "../ion_priv.h"
 #include "compat_msm_ion.h"
 #include <soc/qcom/secure_buffer.h>
+
+#ifdef CONFIG_CFI_CLANG
+static inline void __cfi_dma_flush_area(const void *p, size_t s)
+{
+	__dma_flush_area(p, s);
+}
+static inline void __cfi_dma_inv_area(const void *p, size_t s)
+{
+	__dma_inv_area(p, s);
+}
+static inline void __cfi_dma_clean_area(const void *p, size_t s)
+{
+	__dma_clean_area(p, s);
+}
+
+#define __dma_flush_area __cfi_dma_flush_area
+#define __dma_inv_area __cfi_dma_inv_area
+#define __dma_clean_area __cfi_dma_clean_area
+#endif
 
 #define ION_COMPAT_STR	"qcom,msm-ion"
 
@@ -813,8 +832,8 @@ long msm_ion_custom_ioctl(struct ion_client *client,
 
 		lock_client(client);
 		if (data.flush_data.handle > 0) {
-			handle = ion_handle_get_by_id_nolock(
-					client, (int)data.flush_data.handle);
+			handle = ion_handle_get_by_id_nolock(client,
+						(int)data.flush_data.handle);
 			if (IS_ERR(handle)) {
 				pr_info("%s: Could not find handle: %d\n",
 					__func__, (int)data.flush_data.handle);
@@ -823,7 +842,7 @@ long msm_ion_custom_ioctl(struct ion_client *client,
 			}
 		} else {
 			handle = ion_import_dma_buf_fd_nolock(client,
-							   data.flush_data.fd);
+							data.flush_data.fd);
 			if (IS_ERR(handle)) {
 				pr_info("%s: Could not import handle: %pK\n",
 					__func__, handle);
@@ -838,7 +857,7 @@ long msm_ion_custom_ioctl(struct ion_client *client,
 			data.flush_data.offset;
 		end = start + data.flush_data.length;
 
-		if (start && check_vaddr_bounds(start, end)) {
+		if (check_vaddr_bounds(start, end)) {
 			pr_err("%s: virtual address %pK is out of bounds\n",
 			       __func__, data.flush_data.vaddr);
 			ret = -EINVAL;

@@ -10652,25 +10652,29 @@ static int load_balance(int this_cpu, struct rq *this_rq,
 	struct sched_domain *sd_parent = sd->parent;
 	struct sched_group *group = NULL;
 	struct rq *busiest = NULL;
-	unsigned long flags;
+	struct rq_flags rf;
 	struct cpumask *cpus = this_cpu_cpumask_var_ptr(load_balance_mask);
 
 	struct lb_env env = {
-		.sd			= sd,
-		.dst_cpu		= this_cpu,
-		.dst_rq			= this_rq,
-		.dst_grpmask		= sched_group_cpus(sd->groups),
-		.idle			= idle,
-		.loop_break		= sched_nr_migrate_break,
-		.cpus			= cpus,
-		.fbq_type		= all,
-		.tasks			= LIST_HEAD_INIT(env.tasks),
-		.imbalance		= 0,
-		.flags			= 0,
-		.loop			= 0,
-		.busiest_nr_running     = 0,
-		.busiest_grp_capacity   = 0,
+		.sd		= sd,
+		.dst_cpu	= this_cpu,
+		.dst_rq		= this_rq,
+		.dst_grpmask    = group_balance_mask(sd->groups),
+		.idle		= idle,
+		.loop_break	= sched_nr_migrate_break,
+		.cpus		= cpus,
+		.fbq_type	= all,
+		.tasks		= LIST_HEAD_INIT(env.tasks),
+		.imbalance	= 0,
+		.flags		= 0,
+		.loop		= 0,
 	};
+
+	env.prefer_spread = (idle != CPU_NOT_IDLE &&
+				prefer_spread_on_idle(this_cpu,
+				idle == CPU_NEWLY_IDLE) &&
+				!((sd->flags & SD_ASYM_CPUCAPACITY) &&
+				 !is_asym_cap_cpu(this_cpu)));
 
 	cpumask_and(cpus, sched_domain_span(sd), cpu_active_mask);
 
@@ -10710,9 +10714,10 @@ redo:
 		 * correctly treated as an imbalance.
 		 */
 		env.flags |= LBF_ALL_PINNED;
+		env.loop_max  = min(sysctl_sched_nr_migrate, busiest->nr_running);
 
 more_balance:
-		raw_spin_lock_irqsave(&busiest->lock, flags);
+		rq_lock_irqsave(busiest, &rf);
 
 		/*
 		 * The world might have changed. Validate assumptions.
@@ -10722,16 +10727,12 @@ more_balance:
 
 		if (busiest->nr_running <= 1 ||
 		    (busiest->active_balance && busiest->nr_running <= 2)) {
-			raw_spin_unlock_irqrestore(&busiest->lock, flags);
+			rq_unlock_irqrestore(busiest, &rf);
 			env.flags &= ~LBF_ALL_PINNED;
 			goto no_move;
 		}
 
-		/*
-		 * Set loop_max when rq's lock is taken to prevent a race.
-		 */
-		env.loop_max = min(sysctl_sched_nr_migrate,
-							busiest->cfs.h_nr_running);
+		update_rq_clock(busiest);
 
 		/*
 		 * cur_ld_moved - load moved in current iteration
@@ -10747,14 +10748,14 @@ more_balance:
 		 * See task_rq_lock() family for the details.
 		 */
 
-		raw_spin_unlock(&busiest->lock);
+		rq_unlock(busiest, &rf);
 
 		if (cur_ld_moved) {
 			attach_tasks(&env);
 			ld_moved += cur_ld_moved;
 		}
 
-		local_irq_restore(flags);
+		local_irq_restore(rf.flags);
 
 		if (env.flags & LBF_NEED_BREAK) {
 			env.flags &= ~LBF_NEED_BREAK;
@@ -10765,7 +10766,7 @@ more_balance:
 		 * Revisit (affine) tasks on src_cpu that couldn't be moved to
 		 * us and move them to an alternate dst_cpu in our sched_group
 		 * where they can run. The upper limit on how many times we
-		 * iterate on same src_cpu is dependent on number of cpus in our
+		 * iterate on same src_cpu is dependent on number of CPUs in our
 		 * sched_group.
 		 *
 		 * This changes load balance semantics a bit on who can move
@@ -10782,7 +10783,7 @@ more_balance:
 		 */
 		if ((env.flags & LBF_DST_PINNED) && env.imbalance > 0) {
 
-			/* Prevent to re-select dst_cpu via env's cpus */
+			/* Prevent to re-select dst_cpu via env's CPUs */
 			cpumask_clear_cpu(env.dst_cpu, env.cpus);
 
 			env.dst_rq	 = cpu_rq(env.new_dst_cpu);
@@ -10830,21 +10831,20 @@ more_balance:
 
 no_move:
 	if (!ld_moved) {
-		if (!(env.flags & LBF_BIG_TASK_ACTIVE_BALANCE))
-			schedstat_inc(sd->lb_failed[idle]);
 		/*
 		 * Increment the failure counter only on periodic balance.
 		 * We do not want newidle balance, which can be very
 		 * frequent, pollute the failure counter causing
 		 * excessive cache_hot migrations and active balances.
 		 */
-		if (idle != CPU_NEWLY_IDLE &&
-		    !(env.flags & LBF_BIG_TASK_ACTIVE_BALANCE)) {
+		if (idle != CPU_NEWLY_IDLE) {
 			if (env.src_grp_nr_running > 1)
 				sd->nr_balance_failed++;
 		}
 
 		if (need_active_balance(&env)) {
+			unsigned long flags;
+
 			raw_spin_lock_irqsave(&busiest->lock, flags);
 
 			/*
@@ -10853,19 +10853,22 @@ no_move:
 			 * bail out from the load balancer.
 			 */
 			if (is_reserved(this_cpu) ||
-			    is_reserved(cpu_of(busiest))) {
+					is_reserved(cpu_of(busiest))) {
 				raw_spin_unlock_irqrestore(&busiest->lock,
-							   flags);
+								flags);
 				*continue_balancing = 0;
 				goto out;
 			}
 
-			/* don't kick the active_load_balance_cpu_stop,
-			 * if the curr task on busiest cpu can't be
-			 * moved to this_cpu
+			/*
+			 * Don't kick the active_load_balance_cpu_stop,
+			 * if the curr task on busiest CPU can't be
+			 * moved to this_cpu:
 			 */
 			if (!cpumask_test_cpu(this_cpu,
-					tsk_cpus_allowed(busiest->curr))) {
+						&busiest->curr->cpus_allowed)
+				|| !can_migrate_boosted_task(busiest->curr,
+						cpu_of(busiest), this_cpu)) {
 				raw_spin_unlock_irqrestore(&busiest->lock,
 							    flags);
 				env.flags |= LBF_ALL_PINNED;
@@ -10882,9 +10885,7 @@ no_move:
 				busiest->active_balance = 1;
 				busiest->push_cpu = this_cpu;
 				active_balance = 1;
-#ifdef CONFIG_SCHED_WALT
 				mark_reserved(this_cpu);
-#endif
 			}
 			raw_spin_unlock_irqrestore(&busiest->lock, flags);
 
@@ -10959,7 +10960,8 @@ out:
 				 group ? group->cpumask[0] : 0,
 				 busiest ? busiest->nr_running : 0,
 				 env.imbalance, env.flags, ld_moved,
-				 sd->balance_interval);
+				 sd->balance_interval, active_balance,
+				 sd_overutilized(sd), env.prefer_spread);
 	return ld_moved;
 }
 
@@ -10967,6 +10969,7 @@ static inline unsigned long
 get_sd_balance_interval(struct sched_domain *sd, int cpu_busy)
 {
 	unsigned long interval = sd->balance_interval;
+	unsigned int cpu;
 
 	if (cpu_busy)
 		interval *= sd->busy_factor;
@@ -10975,6 +10978,24 @@ get_sd_balance_interval(struct sched_domain *sd, int cpu_busy)
 	interval = msecs_to_jiffies(interval);
 	interval = clamp(interval, 1UL, max_load_balance_interval);
 
+	/*
+	 * check if sched domain is marked as overutilized
+	 * we ought to only do this on systems which have SD_ASYMCAPACITY
+	 * but we want to do it for all sched domains in those systems
+	 * So for now, just check if overutilized as a proxy.
+	 */
+	/*
+	 * If we are overutilized and we have a misfit task, then
+	 * we want to balance as soon as practically possible, so
+	 * we return an interval of zero, except for busy balance.
+	 */
+	if (sd_overutilized(sd) && !cpu_busy) {
+		/* we know the root is overutilized, let's check for a misfit task */
+		for_each_cpu(cpu, sched_domain_span(sd)) {
+			if (cpu_rq(cpu)->misfit_task_load)
+				return 1;
+		}
+	}
 	return interval;
 }
 
@@ -10991,27 +11012,6 @@ update_next_balance(struct sched_domain *sd, unsigned long *next_balance)
 		*next_balance = next;
 }
 
-#ifdef CONFIG_SCHED_WALT
-static inline bool min_cap_cluster_has_misfit_task(void)
-{
-	int cpu;
-
-	for_each_possible_cpu(cpu) {
-		if (!is_min_capacity_cpu(cpu))
-			break;
-		if (cpu_rq(cpu)->walt_stats.nr_big_tasks)
-			return true;
-	}
-
-	return false;
-}
-#else
-static inline bool min_cap_cluster_has_misfit_task(void)
-{
-	return false;
-}
-#endif
-
 /*
  * idle_balance is called by schedule() if this_cpu is about to become
  * idle. Attempts to pull tasks from other CPUs.
@@ -11023,17 +11023,18 @@ static int idle_balance(struct rq *this_rq, struct rq_flags *rf)
 	struct sched_domain *sd;
 	int pulled_task = 0;
 	u64 curr_cost = 0;
-	bool force_lb = false;
+        u64 avg_idle = this_rq->avg_idle;
+#ifdef CONFIG_SCHED_WALT
+	bool prefer_spread = prefer_spread_on_idle(this_cpu, true);
+	bool force_lb = (!is_min_capacity_cpu(this_cpu) &&
+				silver_has_big_tasks() &&
+				sysctl_sched_force_lb_enable &&
+				(atomic_read(&this_rq->nr_iowait) == 0));
+#endif
+
 
 	if (cpu_isolated(this_cpu))
 		return 0;
-
-	/*
-	 * Force higher capacity CPUs doing load balance, when the lower
-	 * capacity CPUs has some misfit tasks.
-	 */
-	if (!is_min_capacity_cpu(this_cpu) && min_cap_cluster_has_misfit_task())
-		force_lb = true;
 
 	/*
 	 * We must set idle_stamp _before_ calling idle_balance(), such that we
@@ -11042,6 +11043,15 @@ static int idle_balance(struct rq *this_rq, struct rq_flags *rf)
 	this_rq->idle_stamp = rq_clock(this_rq);
 
 	/*
+	 * Do not pull tasks towards !active CPUs...
+	 */
+	if (!cpu_active(this_cpu))
+		return 0;
+#ifdef CONFIG_SCHED_WALT
+	if (force_lb || prefer_spread)
+		avg_idle = ULLONG_MAX;
+#endif
+	/*
 	 * This is OK, because current is on_cpu, which avoids it being picked
 	 * for load-balance and preemption/IRQs are still disabled avoiding
 	 * further scheduler activity on it and we're being very careful to
@@ -11049,14 +11059,16 @@ static int idle_balance(struct rq *this_rq, struct rq_flags *rf)
 	 */
 	rq_unpin_lock(this_rq, rf);
 
-	if (!energy_aware() && !force_lb &&
-	    (this_rq->avg_idle < sysctl_sched_migration_cost ||
-	     !this_rq->rd->overload)) {
+	if (avg_idle < sysctl_sched_migration_cost ||
+	    !READ_ONCE(this_rq->rd->overload)) {
+
 		rcu_read_lock();
 		sd = rcu_dereference_check_sched_domain(this_rq->sd);
 		if (sd)
 			update_next_balance(sd, &next_balance);
 		rcu_read_unlock();
+
+		nohz_newidle_balance(this_rq);
 
 		goto out;
 	}
@@ -11072,8 +11084,14 @@ static int idle_balance(struct rq *this_rq, struct rq_flags *rf)
 		if (!(sd->flags & SD_LOAD_BALANCE))
 			continue;
 
-		if (!force_lb &&
-		    this_rq->avg_idle < curr_cost + sd->max_newidle_lb_cost) {
+#ifdef CONFIG_SCHED_WALT
+		if (prefer_spread && !force_lb &&
+			(sd->flags & SD_ASYM_CPUCAPACITY) &&
+			!is_asym_cap_cpu(this_cpu))
+			avg_idle = this_rq->avg_idle;
+#endif
+
+		if (avg_idle < curr_cost + sd->max_newidle_lb_cost) {
 			update_next_balance(sd, &next_balance);
 			break;
 		}
@@ -11095,13 +11113,11 @@ static int idle_balance(struct rq *this_rq, struct rq_flags *rf)
 		update_next_balance(sd, &next_balance);
 
 		/*
-		 * Stop searching for tasks to pull if there are
-		 * now runnable tasks on the balance rq or if
-		 * continue_balancing has been unset (only possible
-		 * due to active migration).
+		 * Stop searching for tasks to pull if there are now runnable
+		 * tasks on this rq or if active migration kicked in.
 		 */
 		if (pulled_task || this_rq->nr_running > 0 ||
-						!continue_balancing)
+		    !continue_balancing)
 			break;
 	}
 	rcu_read_unlock();
@@ -11137,11 +11153,12 @@ out:
 }
 
 /*
- * active_load_balance_cpu_stop is run by cpu stopper. It pushes
+ * active_load_balance_cpu_stop is run by the CPU stopper. It pushes
  * running tasks off the busiest CPU onto idle CPUs. It requires at
  * least 1 task to be running on each physical CPU where possible, and
  * avoids physical / logical imbalances.
  */
+
 static int active_load_balance_cpu_stop(void *data)
 {
 	struct rq *busiest_rq = data;

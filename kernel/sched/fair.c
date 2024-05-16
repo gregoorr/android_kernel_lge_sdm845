@@ -8850,6 +8850,7 @@ static inline int migrate_degrades_locality(struct task_struct *p,
 /*
  * can_migrate_task - may task p from runqueue rq be migrated to this_cpu?
  */
+
 static
 int can_migrate_task(struct task_struct *p, struct lb_env *env)
 {
@@ -8867,7 +8868,17 @@ int can_migrate_task(struct task_struct *p, struct lb_env *env)
 	if (throttled_lb_pair(task_group(p), env->src_cpu, env->dst_cpu))
 		return 0;
 
-	if (!cpumask_test_cpu(env->dst_cpu, tsk_cpus_allowed(p))) {
+	/*
+	 * don't allow pull boost task to smaller cores.
+	 */
+	if (!can_migrate_boosted_task(p, env->src_cpu, env->dst_cpu))
+		return 0;
+
+	/* Disregard pcpu kthreads; they are where they need to be. */
+	if ((p->flags & PF_KTHREAD) && kthread_is_per_cpu(p))
+		return 0;
+
+	if (!cpumask_test_cpu(env->dst_cpu, &p->cpus_allowed)) {
 		int cpu;
 
 		schedstat_inc(p->se.statistics.nr_failed_migrations_affine);
@@ -8875,19 +8886,22 @@ int can_migrate_task(struct task_struct *p, struct lb_env *env)
 		env->flags |= LBF_SOME_PINNED;
 
 		/*
-		 * Remember if this task can be migrated to any other cpu in
+		 * Remember if this task can be migrated to any other CPU in
 		 * our sched_group. We may want to revisit it if we couldn't
 		 * meet load balance goals by pulling other tasks on src_cpu.
 		 *
-		 * Avoid computing new_dst_cpu for NEWLY_IDLE or if we have
-		 * already computed one in current iteration.
+		 * Avoid computing new_dst_cpu
+		 * - for NEWLY_IDLE
+		 * - if we have already computed one in current iteration
+		 * - if it's an active balance
 		 */
-		if (env->idle == CPU_NEWLY_IDLE || (env->flags & LBF_DST_PINNED))
+		if (env->idle == CPU_NEWLY_IDLE ||
+		    env->flags & (LBF_DST_PINNED | LBF_ACTIVE_LB))
 			return 0;
 
-		/* Prevent to re-select dst_cpu via env's cpus */
+		/* Prevent to re-select dst_cpu via env's CPUs: */
 		for_each_cpu_and(cpu, env->dst_grpmask, env->cpus) {
-			if (cpumask_test_cpu(cpu, tsk_cpus_allowed(p))) {
+			if (cpumask_test_cpu(cpu, &p->cpus_allowed)) {
 				env->flags |= LBF_DST_PINNED;
 				env->new_dst_cpu = cpu;
 				break;
@@ -8900,18 +8914,22 @@ int can_migrate_task(struct task_struct *p, struct lb_env *env)
 	/* Record that we found atleast one task that could run on dst_cpu */
 	env->flags &= ~LBF_ALL_PINNED;
 
-	if (energy_aware() && !env->dst_rq->rd->overutilized &&
-	    env->idle == CPU_NEWLY_IDLE &&
-	    !task_in_related_thread_group(p)) {
-		long util_cum_dst, util_cum_src;
-		unsigned long demand;
+	if (static_branch_unlikely(&sched_energy_present)) {
+		struct root_domain *rd = env->dst_rq->rd;
 
-		demand = task_util(p);
-		util_cum_dst = cpu_util_cum(env->dst_cpu, 0) + demand;
-		util_cum_src = cpu_util_cum(env->src_cpu, 0) - demand;
+		if ((rcu_dereference(rd->pd) && !sd_overutilized(env->sd)) &&
+		    env->idle == CPU_NEWLY_IDLE && !env->prefer_spread &&
+		    !task_in_related_thread_group(p)) {
+			long util_cum_dst, util_cum_src;
+			unsigned long demand;
 
-		if (util_cum_dst > util_cum_src)
-			return 0;
+			demand = task_util(p);
+			util_cum_dst = cpu_util_cum(env->dst_cpu, 0) + demand;
+			util_cum_src = cpu_util_cum(env->src_cpu, 0) - demand;
+
+			if (util_cum_dst > util_cum_src)
+				return 0;
+		}
 	}
 
 #ifdef CONFIG_SCHED_WALT
@@ -8923,6 +8941,10 @@ int can_migrate_task(struct task_struct *p, struct lb_env *env)
 	if (env->flags & LBF_IGNORE_BIG_TASKS &&
 		!task_fits_max(p, env->dst_cpu))
 		return 0;
+
+	/* Don't detach task if it is under active migration */
+	if (env->src_rq->push_task == p)
+		return 0;
 #endif
 
 	if (task_running(env->src_rq, p)) {
@@ -8930,17 +8952,18 @@ int can_migrate_task(struct task_struct *p, struct lb_env *env)
 		return 0;
 	}
 
-	/* Don't detach task if it is under active migration */
-	if (env->src_rq->push_task == p)
-		return 0;
-
 	/*
 	 * Aggressive migration if:
-	 * 1) IDLE or NEWLY_IDLE balance.
-	 * 2) destination numa is preferred
-	 * 3) task is cache cold, or
-	 * 4) too many balance attempts have failed.
+	 * 1) active balance
+	 * 2) IDLE or NEWLY_IDLE balance.
+	 * 3) destination numa is preferred
+	 * 4) task is cache cold, or
+	 * 5) too many balance attempts have failed.
 	 */
+
+	if (env->flags & LBF_ACTIVE_LB)
+		return 1;
+
 	tsk_cache_hot = migrate_degrades_locality(p, env);
 	if (tsk_cache_hot == -1)
 		tsk_cache_hot = task_hot(p, env);
@@ -8966,13 +8989,15 @@ static void detach_task(struct task_struct *p, struct lb_env *env)
 	lockdep_assert_held(&env->src_rq->lock);
 
 	p->on_rq = TASK_ON_RQ_MIGRATING;
-	deactivate_task(env->src_rq, p, 0);
+	deactivate_task(env->src_rq, p, DEQUEUE_NOCLOCK);
 #ifdef CONFIG_SCHED_WALT
+	lockdep_off();
 	double_lock_balance(env->src_rq, env->dst_rq);
+	if (!(env->src_rq->clock_update_flags & RQCF_UPDATED))
+		update_rq_clock(env->src_rq);
 	set_task_cpu(p, env->dst_cpu);
-	if (task_in_related_thread_group(p))
-		env->flags |= LBF_MOVED_RELATED_THREAD_GROUP_TASK;
 	double_unlock_balance(env->src_rq, env->dst_rq);
+	lockdep_on();
 #else
 	set_task_cpu(p, env->dst_cpu);
 #endif
@@ -8986,11 +9011,12 @@ static void detach_task(struct task_struct *p, struct lb_env *env)
  */
 static struct task_struct *detach_one_task(struct lb_env *env)
 {
-	struct task_struct *p, *n;
+	struct task_struct *p;
 
 	lockdep_assert_held(&env->src_rq->lock);
 
-	list_for_each_entry_safe(p, n, &env->src_rq->cfs_tasks, se.group_node) {
+	list_for_each_entry_reverse(p,
+			&env->src_rq->cfs_tasks, se.group_node) {
 		if (!can_migrate_task(p, env))
 			continue;
 
@@ -9020,20 +9046,24 @@ static int detach_tasks(struct lb_env *env)
 {
 	struct list_head *tasks = &env->src_rq->cfs_tasks;
 	struct task_struct *p;
-	unsigned long load;
+	unsigned long load = 0;
 	int detached = 0;
 	int orig_loop = env->loop;
+	u64 start_t = rq_clock(env->src_rq);
 
 	lockdep_assert_held(&env->src_rq->lock);
 
 	if (env->imbalance <= 0)
 		return 0;
 
-	if (!same_cluster(env->dst_cpu, env->src_cpu))
-		env->flags |= LBF_IGNORE_PREFERRED_CLUSTER_TASKS;
+	if (env->src_rq->nr_running < 32) {
+		if (!same_cluster(env->dst_cpu, env->src_cpu))
+			env->flags |= LBF_IGNORE_PREFERRED_CLUSTER_TASKS;
 
-	if (capacity_orig_of(env->dst_cpu) < capacity_orig_of(env->src_cpu))
-		env->flags |= LBF_IGNORE_BIG_TASKS;
+		if (capacity_orig_of(env->dst_cpu) <
+				capacity_orig_of(env->src_cpu))
+			env->flags |= LBF_IGNORE_BIG_TASKS;
+	}
 
 redo:
 	while (!list_empty(tasks)) {
@@ -9044,11 +9074,15 @@ redo:
 		if (env->idle != CPU_NOT_IDLE && env->src_rq->nr_running <= 1)
 			break;
 
-		p = list_first_entry(tasks, struct task_struct, se.group_node);
+		p = list_last_entry(tasks, struct task_struct, se.group_node);
 
 		env->loop++;
 		/* We've more or less seen every task there is, call it quits */
 		if (env->loop > env->loop_max)
+			break;
+
+		/* Abort the loop, if we spent more than 5 msec */
+		if (rq_clock(env->src_rq) - start_t > 5000000)
 			break;
 
 		/* take a breather every nr_migrate tasks */
@@ -9081,8 +9115,13 @@ redo:
 		 * So only when there is other tasks can be balanced or
 		 * there is situation to ignore big task, it is needed
 		 * to skip the task load bigger than 2*imbalance.
+		 *
+		 * And load based checks are skipped for prefer_spread in
+		 * finding busiest group, ignore the task's h_load.
 		 */
-		if (((cpu_rq(env->src_cpu)->nr_running > 2) ||
+
+		if (!env->prefer_spread &&
+			((cpu_rq(env->src_cpu)->nr_running > 2) ||
 			(env->flags & LBF_IGNORE_BIG_TASKS)) &&
 			((load / 2) > env->imbalance))
 			goto next;
@@ -9112,7 +9151,12 @@ redo:
 
 		continue;
 next:
-		list_move_tail(&p->se.group_node, tasks);
+#ifdef CONFIG_SCHED_WALT
+		trace_sched_load_balance_skip_tasks(env->src_cpu, env->dst_cpu,
+				env->src_grp_type, p->pid, load, task_util(p),
+				cpumask_bits(&p->cpus_allowed)[0]);
+#endif
+		list_move(&p->se.group_node, tasks);
 	}
 
 	if (env->flags & (LBF_IGNORE_BIG_TASKS |
@@ -9142,7 +9186,7 @@ static void attach_task(struct rq *rq, struct task_struct *p)
 	lockdep_assert_held(&rq->lock);
 
 	BUG_ON(task_rq(p) != rq);
-	activate_task(rq, p, 0);
+	activate_task(rq, p, ENQUEUE_NOCLOCK);
 	p->on_rq = TASK_ON_RQ_QUEUED;
 	check_preempt_curr(rq, p, 0);
 }
@@ -9153,9 +9197,13 @@ static void attach_task(struct rq *rq, struct task_struct *p)
  */
 static void attach_one_task(struct rq *rq, struct task_struct *p)
 {
-	raw_spin_lock(&rq->lock);
+	struct rq_flags rf;
+
+	rq_lock(rq, &rf);
+	update_rq_clock(rq);
 	attach_task(rq, p);
-	raw_spin_unlock(&rq->lock);
+	update_overutilized_status(rq);
+	rq_unlock(rq, &rf);
 }
 
 /*
@@ -9166,8 +9214,10 @@ static void attach_tasks(struct lb_env *env)
 {
 	struct list_head *tasks = &env->tasks;
 	struct task_struct *p;
+	struct rq_flags rf;
 
-	raw_spin_lock(&env->dst_rq->lock);
+	rq_lock(env->dst_rq, &rf);
+	update_rq_clock(env->dst_rq);
 
 	while (!list_empty(tasks)) {
 		p = list_first_entry(tasks, struct task_struct, se.group_node);
@@ -9176,7 +9226,14 @@ static void attach_tasks(struct lb_env *env)
 		attach_task(env->dst_rq, p);
 	}
 
-	raw_spin_unlock(&env->dst_rq->lock);
+	/*
+	 * The enqueue_task_fair only updates the overutilized status
+	 * for the waking tasks. Since multiple tasks may get migrated
+	 * from load balancer, instead of doing it there, update the
+	 * overutilized status here at the end.
+	 */
+	update_overutilized_status(env->dst_rq);
+	rq_unlock(env->dst_rq, &rf);
 }
 
 static inline bool others_have_blocked(struct rq *rq)
